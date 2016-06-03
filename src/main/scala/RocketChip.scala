@@ -78,7 +78,6 @@ class BasicTopIO(implicit val p: Parameters) extends ParameterizedBundle()(p)
 }
 
 class TopIO(implicit p: Parameters) extends BasicTopIO()(p) {
-  val mem = Vec(nMemChannels, new NastiIO)
   val interrupts = Vec(p(NExtInterrupts), Bool()).asInput
   val mmio = Vec(p(NExtMMIOChannels), new NastiIO)
   val debug = new DebugBusIO()(p).flip
@@ -144,9 +143,13 @@ class Top(topParams: Parameters) extends Module with HasTopLevelParameters {
   io.host <> uncore.io.host
   uncore.io.interrupts <> io.interrupts
   uncore.io.debugBus <> io.debug
-
   io.mmio <> uncore.io.mmio
-  io.mem <> uncore.io.mem
+
+  for (i <- 0 until p(NMemoryChannels)) {
+    val bankDepth = p(DRAMSize) / (p(NastiKey).dataBits / 8)
+    val dramsim = Module(new DRAMSim)
+    dramsim.io <> uncore.io.mem(i)
+  }
 }
 
 /** Wrapper around everything that isn't a Tile.

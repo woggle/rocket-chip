@@ -22,6 +22,7 @@ import ConfigUtils._
 class BaseConfig extends Config (
   topDefinitions = { (pname,site,here) => 
     type PF = PartialFunction[Any,Any]
+    val dramSize = 1L << 31
     def findBy(sname:Any):Any = here[PF](site[Any](sname))(pname)
     lazy val internalIOAddrMap: AddrMap = {
       val entries = collection.mutable.ArrayBuffer[AddrMapEntry]()
@@ -34,7 +35,7 @@ class BaseConfig extends Config (
       new AddrMap(entries)
     }
     lazy val (globalAddrMap, globalAddrHashMap) = {
-      val memSize = 1L << 31
+      val memSize = dramSize
       val memAlign = 1L << 30
       val extIOSize = 1L << 30
       val mem = MemSize(memSize, memAlign, MemAttr(AddrMapProt.RWX, true))
@@ -108,6 +109,9 @@ class BaseConfig extends Config (
       res.toString.getBytes
     }
     pname match {
+      case DRAMSize => dramSize / site(NMemoryChannels)
+      case DRAMBanks => 8
+      case DRAMSimDelay => DelayPair(128, 128 + 64)
       case HtifKey => HtifParameters(
                        width = Dump("HTIF_WIDTH", 16),
                        nSCR = 64,

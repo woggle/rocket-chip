@@ -79,12 +79,39 @@ module rocketTestHarness;
   wire         printf_cond = verbose && !reset;
   integer      stderr = 32'h80000002;
 
-`include `TBVFRAG
+  reg htif_out_ready;
+  wire htif_in_valid;
+  wire [`HTIF_WIDTH-1:0] htif_in_bits;
+  wire htif_in_ready, htif_out_valid;
+  wire [`HTIF_WIDTH-1:0] htif_out_bits;
 
   always @(posedge clk)
   begin
     r_reset <= reset;
   end
+
+  wire htif_clk;
+  wire htif_in_valid_delay;
+  wire htif_in_ready_delay;
+  wire [`HTIF_WIDTH-1:0] htif_in_bits_delay;
+
+  wire htif_out_valid_delay;
+  wire htif_out_ready_delay;
+  wire [`HTIF_WIDTH-1:0] htif_out_bits_delay;
+
+  assign #0.1 htif_in_valid_delay = htif_in_valid;
+  assign #0.1 htif_in_ready = htif_in_ready_delay;
+  assign #0.1 htif_in_bits_delay = htif_in_bits;
+
+  assign #0.1 htif_out_valid = htif_out_valid_delay;
+  assign #0.1 htif_out_ready_delay = htif_out_ready;
+  assign #0.1 htif_out_bits = htif_out_bits_delay;
+
+`ifdef FPGA
+  assign htif_clk = clk;
+`endif
+
+`include `TBVFRAG
 
   reg htif_in_valid_premux;
   reg [`HTIF_WIDTH-1:0] htif_in_bits_premux;

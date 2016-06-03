@@ -11,9 +11,9 @@ CONFIG ?= DefaultConfig
 
 include $(base_dir)/Makefrag
 
-CXXSRCS := emulator mm mm_dramsim2
-CXXFLAGS := $(CXXFLAGS) -std=c++11 -I$(RISCV)/include -I$(base_dir)/csrc -I$(base_dir)/dramsim2
-LDFLAGS := $(LDFLAGS) -L$(RISCV)/lib -Wl,-rpath,$(RISCV)/lib -L. -ldramsim -lfesvr -lpthread
+CXXSRCS := emulator
+CXXFLAGS := $(CXXFLAGS) -std=c++11 -I$(RISCV)/include -I$(base_dir)/csrc
+LDFLAGS := $(LDFLAGS) -L$(RISCV)/lib -Wl,-rpath,$(RISCV)/lib -L. -lfesvr -lpthread
 OBJS := $(addsuffix .o,$(CXXSRCS) $(MODEL).$(CONFIG))
 DEBUG_OBJS := $(addsuffix .debug.o,$(CXXSRCS) $(MODEL).$(CONFIG))
 
@@ -47,11 +47,11 @@ $(model_header_debug) $(params_file_debug): $(chisel_srcs)
 	cd $(base_dir) && $(SBT) "project $(PROJECT)" "run $(CHISEL_ARGS)-debug  --debug --vcd --ioDebug"
 
 emu = emulator-$(MODEL)-$(CONFIG)
-$(emu): $(model_header) $(OBJS) libdramsim.a
+$(emu): $(model_header) $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
 emu_debug = emulator-$(MODEL)-$(CONFIG)-debug
-$(emu_debug): $(generated_dir)/$(MODEL).$(CONFIG).d $(model_header_debug) $(DEBUG_OBJS) libdramsim.a
+$(emu_debug): $(generated_dir)/$(MODEL).$(CONFIG).d $(model_header_debug) $(DEBUG_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $(DEBUG_OBJS) $(LDFLAGS)
 
 all: $(emu)
@@ -74,18 +74,18 @@ ifneq ($(MAKECMDGOALS),clean)
 endif
 
 $(output_dir)/%.run: $(output_dir)/% emulator-$(MODEL)-$(CONFIG)
-	./$(emu) +dramsim +max-cycles=$(timeout_cycles) $< 2> /dev/null 2> $@ && [ $$PIPESTATUS -eq 0 ]
+	./$(emu) +max-cycles=$(timeout_cycles) $< 2> /dev/null 2> $@ && [ $$PIPESTATUS -eq 0 ]
 
 $(output_dir)/%.out: $(output_dir)/% emulator-$(MODEL)-$(CONFIG)
-	./$(emu) +dramsim +max-cycles=$(timeout_cycles) +verbose $< $(disasm) $@ && [ $$PIPESTATUS -eq 0 ]
+	./$(emu) +max-cycles=$(timeout_cycles) +verbose $< $(disasm) $@ && [ $$PIPESTATUS -eq 0 ]
 
 $(output_dir)/%.vcd: $(output_dir)/% emulator-$(MODEL)-$(CONFIG)-debug
-	./$(emu_debug) +dramsim +max-cycles=$(timeout_cycles) +verbose -v$@ $< $(disasm) $(patsubst %.vcd,%.out,$@) && [ $$PIPESTATUS -eq 0 ]
+	./$(emu_debug) +max-cycles=$(timeout_cycles) +verbose -v$@ $< $(disasm) $(patsubst %.vcd,%.out,$@) && [ $$PIPESTATUS -eq 0 ]
 
 $(output_dir)/%.vpd: $(output_dir)/% emulator-$(MODEL)-$(CONFIG)-debug
 	rm -rf $@.vcd && mkfifo $@.vcd
 	vcd2vpd $@.vcd $@ > /dev/null &
-	./$(emu_debug) +dramsim +max-cycles=$(timeout_cycles) +verbose -v$@.vcd $< $(disasm) $(patsubst %.vpd,%.out,$@) && [ $$PIPESTATUS -eq 0 ]
+	./$(emu_debug) +max-cycles=$(timeout_cycles) +verbose -v$@.vcd $< $(disasm) $(patsubst %.vpd,%.out,$@) && [ $$PIPESTATUS -eq 0 ]
 
 run: run-asm-tests run-bmark-tests
 run-debug: run-asm-tests-debug run-bmark-tests-debug
