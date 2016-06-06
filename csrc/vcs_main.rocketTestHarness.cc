@@ -16,7 +16,6 @@ extern int vcs_main(int argc, char** argv);
 
 static htif_emulator_t* htif;
 static unsigned htif_bytes = HTIF_WIDTH / 8;
-static mm_t* mm[N_MEM_CHANNELS];
 static const char* loadmem;
 static bool dramsim = false;
 static int memory_channel_mux_select = 0;
@@ -34,32 +33,24 @@ int main(int argc, char** argv)
   {
     if (!strcmp(argv[i], "+dramsim"))
       dramsim = true;
-    else if (!strncmp(argv[i], "+loadmem=", 9))
-      loadmem = argv[i]+9;
     else if (!strncmp(argv[i], "+memory_channel_mux_select=", 27))
       memory_channel_mux_select = atoi(argv[i]+27);
   }
 
   htif = new htif_emulator_t(std::vector<std::string>(argv + 1, argv + argc));
 
-  for (int i=0; i<N_MEM_CHANNELS; i++) {
-    mm[i] = dramsim ? (mm_t*)(new mm_dramsim2_t) : (mm_t*)(new mm_magic_t);
-    mm[i]->init(MEM_SIZE / N_MEM_CHANNELS, MEM_DATA_BITS / 8, CACHE_BLOCK_BYTES);
-  }
-
-  if (loadmem) {
-    void *mems[N_MEM_CHANNELS];
-    for (int i = 0; i < N_MEM_CHANNELS; i++)
-      mems[i] = mm[i]->get_data();
-    load_mem(mems, loadmem, CACHE_BLOCK_BYTES, N_MEM_CHANNELS);
-  }
-
   vcs_main(argc, argv);
   abort(); // should never get here
 }
 
+void make_mm(vc_handle mm_ptr) {
+  mm_t *mm = dramsim ? (mm_t*)(new mm_dramsim2_t) : (mm_t*)(new mm_magic_t);
+  mm->init(MEM_SIZE / N_MEM_CHANNELS, MEM_DATA_BITS / 8, CACHE_BLOCK_BYTES);
+  vc_putPointer(mm_ptr, mm);
+}
+
 void memory_tick(
-  vc_handle channel,
+  vc_handle mm_ptr,
 
   vc_handle ar_valid,
   vc_handle ar_ready,
@@ -93,9 +84,7 @@ void memory_tick(
   vc_handle b_resp,
   vc_handle b_id)
 {
-  int c = vc_4stVectorRef(channel)->d;
-  assert(c < N_MEM_CHANNELS);
-  mm_t* mmc = mm[c];
+  mm_t* mmc = (mm_t *) vc_getPointer(mm_ptr);
 
   uint32_t write_data[mmc->get_word_size()/sizeof(uint32_t)];
   for (size_t i = 0; i < mmc->get_word_size()/sizeof(uint32_t); i++)

@@ -15,43 +15,6 @@ extern "A" void htif_tick
   output reg  [31:0]            exit
 );
 
-extern "A" void memory_tick
-(
-  input  reg [31:0]               channel,
-
-  input  reg                      ar_valid,
-  output reg                      ar_ready,
-  input  reg [`MEM_ADDR_BITS-1:0] ar_addr,
-  input  reg [`MEM_ID_BITS-1:0]   ar_id,
-  input  reg [2:0]                ar_size,
-  input  reg [7:0]                ar_len,
-
-  input  reg                      aw_valid,
-  output reg                      aw_ready,
-  input  reg [`MEM_ADDR_BITS-1:0] aw_addr,
-  input  reg [`MEM_ID_BITS-1:0]   aw_id,
-  input  reg [2:0]                aw_size,
-  input  reg [7:0]                aw_len,
-
-  input  reg                      w_valid,
-  output reg                      w_ready,
-  input  reg [`MEM_STRB_BITS-1:0] w_strb,
-  input  reg [`MEM_DATA_BITS-1:0] w_data,
-  input  reg                      w_last,
-
-  output reg                      r_valid,
-  input  reg                      r_ready,
-  output reg [1:0]                r_resp,
-  output reg [`MEM_ID_BITS-1:0]   r_id,
-  output reg [`MEM_DATA_BITS-1:0] r_data,
-  output reg                      r_last,
-
-  output reg                      b_valid,
-  input  reg                      b_ready,
-  output reg [1:0]                b_resp,
-  output reg [`MEM_ID_BITS-1:0]   b_id
-);
-
 module rocketTestHarness;
 
   reg [31:0] seed;

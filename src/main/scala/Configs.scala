@@ -112,6 +112,7 @@ class BaseConfig extends Config (
       case DRAMSize => dramSize / site(NMemoryChannels)
       case DRAMBanks => 8
       case DRAMSimDelay => DelayPair(128, 128 + 64)
+      case UseDRAMSimBlackBox => false
       case HtifKey => HtifParameters(
                        width = Dump("HTIF_WIDTH", 16),
                        nSCR = 64,
@@ -532,3 +533,8 @@ class WithSplitL2Metadata extends Config(knobValues = { case "L2_SPLIT_METADATA"
 class SplitL2MetadataTestConfig extends Config(new WithSplitL2Metadata ++ new DefaultL2Config)
 
 class DualCoreConfig extends Config(new With2Cores ++ new BaseConfig)
+
+class WithDRAMSimBlackBox extends Config(
+  (pname, site, here) => pname match {
+    case UseDRAMSimBlackBox => true
+  })

@@ -35,6 +35,8 @@ case object ExtraL1Clients extends Field[Int]
 case object NExtInterrupts extends Field[Int]
 /** Interrupt controller configuration */
 case object PLICKey extends Field[PLICConfig]
+/** Use a black box for the DRAM simulation */
+case object UseDRAMSimBlackBox extends Field[Boolean]
 
 case object UseStreamLoopback extends Field[Boolean]
 case object StreamLoopbackSize extends Field[Int]
@@ -121,8 +123,14 @@ object TopUtils {
   }
 }
 
+class DRAMSimBlackBox(implicit p: Parameters) extends BlackBox {
+  val io = new Bundle {
+    val clock = Clock().asInput
+    val mem = (new NastiIO).flip
+  }
+}
+
 /** Top-level module for the chip */
-//TODO: Remove this wrapper once multichannel DRAM controller is provided
 class Top(topParams: Parameters) extends Module with HasTopLevelParameters {
   implicit val p = topParams
   val io = new TopIO
@@ -147,8 +155,14 @@ class Top(topParams: Parameters) extends Module with HasTopLevelParameters {
 
   for (i <- 0 until p(NMemoryChannels)) {
     val bankDepth = p(DRAMSize) / (p(NastiKey).dataBits / 8)
-    val dramsim = Module(new DRAMSim)
-    dramsim.io <> uncore.io.mem(i)
+    val dramsim_io = if (p(UseDRAMSimBlackBox)) {
+      val bbox = Module(new DRAMSimBlackBox)
+      bbox.io.clock := clock
+      bbox.io.mem
+    } else {
+      Module(new DRAMSim).io
+    }
+    dramsim_io <> uncore.io.mem(i)
   }
 }
 
