@@ -6,6 +6,8 @@ import Chisel._
 import Util._
 import cde.Parameters
 
+
+
 class TDRSelect(implicit p: Parameters) extends CoreBundle()(p) {
   val tdrmode = Bool()
   val reserved = UInt(width = xLen - 1 - log2Up(nTDR))
@@ -14,22 +16,49 @@ class TDRSelect(implicit p: Parameters) extends CoreBundle()(p) {
   def nTDR = p(NBreakpoints)
 }
 
+object TDRType extends scala.Enumeration {
+  type TDRType = Value
+  val None, Legacy, Match = Value
+  val Unavailable = Value(15)
+}
+import TDRType._
+
+object TDRSelect extends scala.Enumeration {
+  type TDRSelect = Value
+  val Address, Data = Value
+}
+import TDRSelect._
+
+object TDRAction extends scala.Enumeration {
+  type TDRAction = Value
+  val None, DebugException, DebugMode, StartTrace, StopTrace, EmitTrace = Value
+}
+import TDRAction._
+
+object TDRMatch extends scala.Enumeration {
+  type Match = Value
+  val Equal, NAPOT, GreaterEq, LessThan, Lower, Upper
+
+
+
 class BPControl(implicit p: Parameters) extends CoreBundle()(p) {
   val tdrtype = UInt(width = 4)
-  val bpamaskmax = UInt(width = 5)
-  val reserved = UInt(width = xLen-28)
-  val bpaction = UInt(width = 8)
+  val bpmaskmax = UInt(width = 6)
+  val reserved = UInt(width = xLen-30)
+  val bpselect = Bool()
+  val bpaction = UInt(width = 7)
+  val bpchain = Bool()
   val bpmatch = UInt(width = 4)
   val m = Bool()
   val h = Bool()
   val s = Bool()
   val u = Bool()
-  val r = Bool()
-  val w = Bool()
   val x = Bool()
-
-  def tdrType = 1
-  def bpaMaskMax = 4
+  val w = Bool()
+  val r = Bool()
+  
+  def tdrType = 2
+  def bpMaskMax = 4
   def enabled(mstatus: MStatus) = Cat(m, h, s, u)(mstatus.prv)
 }
 
@@ -65,9 +94,11 @@ class BreakpointUnit(implicit p: Parameters) extends CoreModule()(p) {
 
   for (bp <- io.bp) {
     when (bp.control.enabled(io.status)) {
-      when (bp.pow2AddressMatch(io.pc) && bp.control.x) { io.xcpt_if := true }
-      when (bp.pow2AddressMatch(io.ea) && bp.control.r) { io.xcpt_ld := true }
-      when (bp.pow2AddressMatch(io.ea) && bp.control.w) { io.xcpt_st := true }
+      when (bp.action === UInt(1)) {
+        when (bp.pow2AddressMatch(io.pc) && bp.control.x) { io.xcpt_if := true }
+        when (bp.pow2AddressMatch(io.ea) && bp.control.r) { io.xcpt_ld := true }
+        when (bp.pow2AddressMatch(io.ea) && bp.control.w) { io.xcpt_st := true }
+      }
     }
   }
 

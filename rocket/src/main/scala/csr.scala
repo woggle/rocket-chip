@@ -548,7 +548,8 @@ class CSRFile(implicit p: Parameters) extends CoreModule()(p)
         when (decoded_addr(CSRs.tdrdata1)) {
           val newBPC = new BPControl().fromBits(wdata)
           reg_bp(reg_tdrselect.tdrindex).control := newBPC
-          reg_bp(reg_tdrselect.tdrindex).control.bpmatch := newBPC.bpmatch & 2 /* exact/NAPOT only */
+          reg_bp(reg_tdrselect.tdrindex).control.bpaction  := newBPC.bpaction  & 1 /* None or debug exception*/
+          reg_bp(reg_tdrselect.tdrindex).control.bpmatch   := newBPC.bpmatch & 1 /* exact/NAPOT only */
         }
         when (decoded_addr(CSRs.tdrdata2)) { reg_bp(reg_tdrselect.tdrindex).address := wdata }
       }
@@ -576,13 +577,15 @@ class CSRFile(implicit p: Parameters) extends CoreModule()(p)
   for (bpc <- reg_bp map {_.control}) {
     bpc.tdrtype := bpc.tdrType
     bpc.bpamaskmax := bpc.bpaMaskMax
+    bpc.bpselect := 0
     bpc.reserved := 0
-    bpc.bpaction := 0
+    bpc.chain    := 0
     bpc.h := false
     if (!usingVM) bpc.s := false
     if (!usingUser) bpc.u := false
     if (!usingVM && !usingUser) bpc.m := true
     when (reset) {
+      bpc.bpaction := 0
       bpc.r := false
       bpc.w := false
       bpc.x := false
