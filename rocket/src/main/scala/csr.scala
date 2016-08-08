@@ -548,8 +548,9 @@ class CSRFile(implicit p: Parameters) extends CoreModule()(p)
         when (decoded_addr(CSRs.tdrdata1)) {
           val newBPC = new BPControl().fromBits(wdata)
           reg_bp(reg_tdrselect.tdrindex).control := newBPC
-          reg_bp(reg_tdrselect.tdrindex).control.bpaction  := newBPC.bpaction  & 1 /* None or debug exception*/
-          reg_bp(reg_tdrselect.tdrindex).control.bpmatch   := newBPC.bpmatch & 1 /* exact/NAPOT only */
+          reg_bp(reg_tdrselect.tdrindex).control.bpaction := newBPC.bpaction & 1 /*None/DebugException only*/
+          reg_bp(reg_tdrselect.tdrindex).control.bpmatch  := newBPC.bpmatch  & 3 /* EQ/NAPOT/GEQ/LT only */
+
         }
         when (decoded_addr(CSRs.tdrdata2)) { reg_bp(reg_tdrselect.tdrindex).address := wdata }
       }
@@ -576,16 +577,17 @@ class CSRFile(implicit p: Parameters) extends CoreModule()(p)
   if (reg_bp.isEmpty) reg_tdrselect.tdrindex := 0
   for (bpc <- reg_bp map {_.control}) {
     bpc.tdrtype := bpc.tdrType
-    bpc.bpamaskmax := bpc.bpaMaskMax
-    bpc.bpselect := 0
+    bpc.bpmaskmax := bpc.bpMaskMax
+    bpc.bpselect := UInt(TDRSelect.Address.id)
     bpc.reserved := 0
-    bpc.chain    := 0
     bpc.h := false
     if (!usingVM) bpc.s := false
     if (!usingUser) bpc.u := false
     if (!usingVM && !usingUser) bpc.m := true
     when (reset) {
-      bpc.bpaction := 0
+      bpc.bpaction := UInt(TDRAction.None.id)
+      bpc.bpmatch   := UInt(TDRMatch.EQ.id)
+      bpc.bpchain  := 0
       bpc.r := false
       bpc.w := false
       bpc.x := false

@@ -252,6 +252,9 @@ class Rocket(implicit p: Parameters) extends CoreModule()(p) {
   bpu.io.bp := csr.io.bp
   bpu.io.pc := ibuf.io.pc
   bpu.io.ea := mem_reg_wdata
+  bpu.io.r  := mem_reg_load
+  bpu.io.w  := mem_reg_store
+
 
   val id_xcpt_if = ibuf.io.inst(0).bits.pf0 || ibuf.io.inst(0).bits.pf1
   val (id_xcpt, id_cause) = checkExceptions(List(
