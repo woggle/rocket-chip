@@ -7,17 +7,19 @@ import junctions.NastiConstants._
 import uncore.tilelink._
 import uncore.util._
 
-case object NDmaTransactors extends Field[Int]
+case object NDmaTrackers extends Field[Int]
 case object NDmaXacts extends Field[Int]
+case object NDmaTrackerMemXacts extends Field[Int]
+case object BuildDmaTracker extends Field[Parameters => DmaTracker]
 
 trait HasDmaParameters {
   implicit val p: Parameters
-  val nDmaTransactors = p(NDmaTransactors)
+  val nDmaTrackers = p(NDmaTrackers)
   val nDmaXacts = p(NDmaXacts)
+  val nDmaTrackerMemXacts = p(NDmaTrackerMemXacts)
   val dmaXactIdBits = log2Up(nDmaXacts)
   val addrBits = p(PAddrBits)
   val dmaStatusBits = 2
-  val trackerMemXacts = 4
 }
 
 abstract class DmaModule(implicit val p: Parameters) extends Module with HasDmaParameters
@@ -72,19 +74,24 @@ class DmaTrackerIO(implicit p: Parameters) extends DmaBundle()(p) {
   val mem = new ClientUncachedTileLinkIO
 }
 
+abstract class DmaTracker(implicit p: Parameters)
+    extends DmaModule()(p) with HasTileLinkParameters {
+  val io = new DmaTrackerIO
+}
+
 class DmaTrackerFile(implicit p: Parameters) extends DmaModule()(p) {
   val io = new Bundle {
     val dma = (new DmaIO).flip
-    val mem = Vec(nDmaTransactors, new ClientUncachedTileLinkIO)
+    val mem = Vec(nDmaTrackers, new ClientUncachedTileLinkIO)
   }
 
-  val trackers = List.fill(nDmaTransactors) { Module(new DmaTracker) }
+  val trackers = List.fill(nDmaTrackers) { p(BuildDmaTracker)(p) }
   val reqReadys = trackers.map(_.io.dma.req.ready).asUInt
 
   io.mem <> trackers.map(_.io.mem)
 
-  if (nDmaTransactors > 1) {
-    val resp_arb = Module(new RRArbiter(new DmaResponse, nDmaTransactors))
+  if (nDmaTrackers > 1) {
+    val resp_arb = Module(new RRArbiter(new DmaResponse, nDmaTrackers))
     resp_arb.io.in <> trackers.map(_.io.dma.resp)
     io.dma.resp <> resp_arb.io.out
 
@@ -99,9 +106,7 @@ class DmaTrackerFile(implicit p: Parameters) extends DmaModule()(p) {
   }
 }
 
-class DmaTracker(implicit p: Parameters) extends DmaModule()(p)
-    with HasTileLinkParameters with HasNastiParameters {
-  val io = new DmaTrackerIO
+class BigBufferDmaTracker(implicit p: Parameters) extends DmaTracker()(p) {
 
   private val blockOffset = tlBeatAddrBits + tlByteAddrBits
   private val blockBytes = tlDataBeats * tlDataBytes
@@ -138,8 +143,8 @@ class DmaTracker(implicit p: Parameters) extends DmaModule()(p)
   }.asUInt
 
   val prefetch_sent = io.mem.acquire.fire() && io.mem.acquire.bits.isPrefetch()
-  val prefetch_busy = Reg(init = UInt(0, trackerMemXacts))
-  val (prefetch_id, _) = Counter(prefetch_sent, trackerMemXacts)
+  val prefetch_busy = Reg(init = UInt(0, nDmaTrackerMemXacts))
+  val (prefetch_id, _) = Counter(prefetch_sent, nDmaTrackerMemXacts)
 
   val base_index = Cat(put_half, put_beat)
   val put_data = Wire(init = Bits(0, tlDataBits))
@@ -289,13 +294,262 @@ class DmaTracker(implicit p: Parameters) extends DmaModule()(p)
   when (io.dma.resp.fire()) { state := s_idle }
 }
 
+class PipelinePacket(implicit p: Parameters)
+    extends DmaBundle()(p) with HasTileLinkParameters {
+  val data = UInt(width = tlDataBits)
+  val mask = UInt(width = tlDataBytes)
+}
+
+class PipelinedDmaTrackerPrefetcher(implicit p: Parameters)
+    extends DmaModule()(p) with HasTileLinkParameters {
+  val io = new Bundle {
+    val dma_req = Valid(new DmaRequest).flip
+    val mem = new ClientUncachedTileLinkIO
+    val busy = Bool(OUTPUT)
+  }
+
+  private val blockOffset = tlBeatAddrBits + tlByteAddrBits
+  private val blockBytes = tlDataBeats * tlDataBytes
+
+  val dst_block = Reg(UInt(width = tlBlockAddrBits))
+  val bytes_left = Reg(UInt(width = addrBits))
+
+  val prefetch_put = Reg(Bool())
+  val prefetch_busy = Reg(UInt(width = nDmaTrackerMemXacts), init = UInt(0))
+  val prefetch_id_onehot = PriorityEncoderOH(~prefetch_busy)
+  val prefetch_id = OHToUInt(prefetch_id_onehot)
+
+  prefetch_busy := (prefetch_busy |
+    Mux(io.mem.acquire.fire(), UIntToOH(prefetch_id), UInt(0))) &
+    ~Mux(io.mem.grant.fire(), UIntToOH(io.mem.grant.bits.client_xact_id), UInt(0))
+
+  val s_idle :: s_prefetch :: Nil = Enum(Bits(), 2)
+  val state = Reg(init = s_idle)
+
+  io.mem.acquire.valid := (state === s_prefetch) && !prefetch_busy.andR
+  io.mem.acquire.bits := Mux(prefetch_put,
+    PutPrefetch(client_xact_id = prefetch_id, addr_block = dst_block),
+    GetPrefetch(client_xact_id = prefetch_id, addr_block = dst_block))
+  io.mem.grant.ready := prefetch_busy.orR
+  io.busy := (state =/= s_idle) || prefetch_busy.orR
+
+  when (state === s_idle && io.dma_req.valid) {
+    val dst_off = io.dma_req.bits.dest(blockOffset - 1, 0)
+    dst_block := io.dma_req.bits.dest(addrBits - 1, blockOffset)
+    bytes_left := io.dma_req.bits.length + dst_off
+    state := s_prefetch
+  }
+
+  when (io.mem.acquire.fire()) {
+    when (bytes_left < UInt(blockBytes)) {
+      bytes_left := UInt(0)
+      state := s_idle
+    } .otherwise {
+      bytes_left := bytes_left - UInt(blockBytes)
+      dst_block := dst_block + UInt(1)
+    }
+  }
+}
+
+class PipelinedDmaTrackerReader(implicit p: Parameters)
+    extends DmaModule()(p) with HasTileLinkParameters {
+  val io = new Bundle {
+    val dma_req = Valid(new DmaRequest).flip
+    val mem = new ClientUncachedTileLinkIO
+    val pipe = Decoupled(new PipelinePacket)
+    val busy = Bool(OUTPUT)
+  }
+
+  private val blockOffset = tlBeatAddrBits + tlByteAddrBits
+  private val blockBytes = tlDataBeats * tlDataBytes
+
+  val src_addr = Reg(UInt(width = addrBits))
+  val src_block = src_addr(addrBits - 1, blockOffset)
+  val src_beat = src_addr(blockOffset - 1, tlByteAddrBits)
+  val src_byte_off = src_addr(tlByteAddrBits - 1, 0)
+
+  val gnt_byte_off = Reg(UInt(width = tlByteAddrBits))
+  val bytes_read = UInt(tlDataBytes) - gnt_byte_off
+  val bytes_left = Reg(UInt(width = addrBits))
+
+  val s_idle :: s_mem_req :: Nil = Enum(Bits(), 2)
+  val state = Reg(init = s_idle)
+
+  val get_busy = Reg(UInt(width = nDmaTrackerMemXacts), init = UInt(0))
+  val get_id_onehot = PriorityEncoderOH(~get_busy)
+  val get_id = OHToUInt(get_id_onehot)
+
+  when (state === s_idle && io.dma_req.valid) {
+    src_addr := io.dma_req.bits.source
+    bytes_left := io.dma_req.bits.length
+    gnt_byte_off := io.dma_req.bits.source(tlByteAddrBits - 1, 0)
+    state := s_mem_req
+  }
+
+  when (io.mem.acquire.fire()) {
+    val bytes_to_read = UInt(tlDataBytes) - src_byte_off
+    src_addr := src_addr + bytes_to_read
+    when (bytes_left > bytes_to_read) {
+      bytes_left := bytes_left - bytes_to_read
+    } .otherwise {
+      bytes_left := UInt(0)
+      state := s_idle
+    }
+  }
+
+  when (io.pipe.fire()) {
+    gnt_byte_off := gnt_byte_off + bytes_read
+  }
+
+  get_busy := (get_busy |
+    Mux(io.mem.acquire.fire(), UIntToOH(get_id), UInt(0))) &
+    ~Mux(io.mem.grant.fire(), UIntToOH(io.mem.grant.bits.client_xact_id), UInt(0))
+
+  val bytes_left_mask = Mux(bytes_left < UInt(tlDataBytes),
+    (UInt(1) << bytes_left(tlByteAddrBits - 1, 0)) - UInt(1),
+    Acquire.fullWriteMask)
+
+  io.mem.acquire.valid := state === s_mem_req && !get_busy.andR
+  io.mem.acquire.bits := Get(
+    client_xact_id = get_id,
+    addr_block = src_block,
+    addr_beat = src_beat)
+  io.mem.grant.ready := io.pipe.ready
+  io.pipe.valid := io.mem.grant.valid
+  io.pipe.bits.data := io.mem.grant.bits.data >> Cat(gnt_byte_off, UInt(0, 3))
+  io.pipe.bits.mask := (Acquire.fullWriteMask >> gnt_byte_off) | bytes_left_mask
+  io.busy := state =/= s_idle || get_busy.orR
+}
+
+class PipelinedDmaTrackerWriter(implicit p: Parameters)
+    extends DmaModule()(p) with HasTileLinkParameters {
+  val io = new Bundle {
+    val dma_req = Valid(new DmaRequest).flip
+    val mem = new ClientUncachedTileLinkIO
+    val pipe = Decoupled(new PipelinePacket).flip
+    val busy = Bool(OUTPUT)
+  }
+
+  private val blockOffset = tlBeatAddrBits + tlByteAddrBits
+  private val blockBytes = tlDataBeats * tlDataBytes
+
+  val dst_addr = Reg(UInt(width = addrBits))
+  val dst_block = dst_addr(addrBits - 1, blockOffset)
+  val dst_beat = dst_addr(blockOffset - 1, tlByteAddrBits)
+  val dst_byte_off = dst_addr(tlByteAddrBits - 1, 0)
+  val bytes_left = Reg(UInt(width = addrBits))
+
+  val s_idle :: s_pipe :: s_mem_req :: Nil = Enum(Bits(), 3)
+  val state = Reg(init = s_idle)
+
+  val data = Reg(UInt(width = tlDataBits))
+  val mask = Reg(UInt(width = tlDataBytes))
+
+  val put_busy = Reg(UInt(width = nDmaTrackerMemXacts), init = UInt(0))
+  val put_id_onehot = PriorityEncoderOH(~put_busy)
+  val put_id = OHToUInt(put_id_onehot)
+
+  val mask_size = Log2(PopCount(mask))
+  val off_size = MuxCase(UInt(log2Up(tlDataBytes)),
+    (0 until log2Up(tlDataBytes))
+      .map(place => (dst_addr(place) -> UInt(place))))
+  val size = Mux(mask_size < off_size, mask_size, off_size)
+  val storegen = new StoreGen(size, dst_addr, data, tlDataBytes)
+
+  io.mem.acquire.valid := (state === s_mem_req) && !put_busy.andR
+  io.mem.acquire.bits := Put(
+    client_xact_id = put_id,
+    addr_block = dst_block,
+    addr_beat = dst_beat,
+    data = storegen.data,
+    wmask = Some(storegen.mask))
+  io.mem.grant.ready := put_busy.orR
+
+  put_busy := (put_busy |
+    Mux(io.mem.acquire.fire(), UIntToOH(put_id), UInt(0))) &
+    ~Mux(io.mem.grant.fire(), UIntToOH(io.mem.grant.bits.client_xact_id), UInt(0))
+
+  when (state === s_idle && io.dma_req.valid) {
+    dst_addr := io.dma_req.bits.dest
+    bytes_left := io.dma_req.bits.length
+    state := s_pipe
+  }
+
+  when (io.pipe.fire()) {
+    data := io.pipe.bits.data
+    mask := io.pipe.bits.mask
+    state := s_mem_req
+  }
+
+  when (io.mem.acquire.fire()) {
+    val true_size = UInt(1) << size
+    val new_mask = mask >> true_size
+    val new_bytes_left = bytes_left - true_size
+
+    bytes_left := new_bytes_left
+    dst_addr := dst_addr + true_size
+    mask := new_mask
+
+    when (new_bytes_left === UInt(0)) {
+      state := s_idle
+    } .elsewhen (new_mask === UInt(0)) {
+      state := s_pipe
+    }
+  }
+
+  io.pipe.ready := state === s_pipe
+  io.busy := state =/= s_idle || put_busy.orR
+}
+
+case object DmaTrackerPipelineDepth extends Field[Int]
+
+class PipelinedDmaTracker(implicit p: Parameters) extends DmaTracker()(p) {
+  val prefetch = Module(new PipelinedDmaTrackerPrefetcher)
+  val reader = Module(new PipelinedDmaTrackerReader)
+  val writer = Module(new PipelinedDmaTrackerWriter)
+  val memPorts = Seq(prefetch.io.mem, reader.io.mem, writer.io.mem)
+
+  val busy = prefetch.io.busy || reader.io.busy || writer.io.busy
+  val xact_id = Reg(UInt(width = dmaXactIdBits))
+
+  writer.io.pipe <> Queue(reader.io.pipe, p(DmaTrackerPipelineDepth))
+
+  val s_idle :: s_resp :: Nil = Enum(Bits(), 2)
+  val state = Reg(init = s_idle)
+
+  io.dma.req.ready := state === s_idle
+  io.dma.resp.valid := state === s_resp && !busy
+  io.dma.resp.bits.xact_id := xact_id
+  io.dma.resp.bits.status := UInt(0)
+
+  val is_prefetch = io.dma.req.bits.isPrefetch()
+  val is_copy = io.dma.req.bits.cmd === DMA_CMD_COPY
+
+  prefetch.io.dma_req.valid := io.dma.req.fire() && is_prefetch
+  prefetch.io.dma_req.bits := io.dma.req.bits
+  reader.io.dma_req.valid := io.dma.req.fire() && is_copy
+  reader.io.dma_req.bits := io.dma.req.bits
+  writer.io.dma_req.valid := io.dma.req.fire() && is_copy
+  writer.io.dma_req.bits := io.dma.req.bits
+
+  when (io.dma.req.fire()) {
+    xact_id := io.dma.req.bits.xact_id
+    state := s_resp
+  }
+  when (io.dma.resp.fire()) { state := s_idle }
+
+  val arb = Module(new ClientUncachedTileLinkIOArbiter(memPorts.size))
+  arb.io.in <> memPorts
+  io.mem <> arb.io.out
+}
+
 class DmaBackend(implicit p: Parameters) extends DmaModule()(p) {
   val io = new Bundle {
     val dma = (new DmaIO).flip
     val mem = new ClientUncachedTileLinkIO
   }
 
-  val memArb = Module(new ClientUncachedTileLinkIOArbiter(nDmaTransactors))
+  val memArb = Module(new ClientUncachedTileLinkIOArbiter(nDmaTrackers))
   val trackerFile = Module(new DmaTrackerFile)
   
   trackerFile.io.dma <> io.dma

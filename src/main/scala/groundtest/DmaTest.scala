@@ -5,6 +5,7 @@ import dma._
 import rocket.{TLBPTWIO, HasCoreParameters}
 import uncore.tilelink._
 import uncore.agents.CacheBlockBytes
+import uncore.util._
 import junctions.Timer
 import cde.Parameters
 
@@ -90,7 +91,7 @@ class DmaTestDriver(start: BigInt, nBlocks: Int)
        s_get_req :: s_get_resp :: s_done :: Nil) = Enum(Bits(), 9)
   val state = Reg(init = s_idle)
 
-  io.mem.acquire.valid := (state === s_put_req) || (state === s_get_req)
+  io.mem.acquire.valid := state.isOneOf(s_put_req, s_get_req)
   io.mem.acquire.bits := Mux(state === s_put_req,
     PutBlock(
       client_xact_id = UInt(0),
@@ -108,6 +109,9 @@ class DmaTestDriver(start: BigInt, nBlocks: Int)
     src_start = UInt(start),
     dst_start = UInt(start + nBytes),
     segment_size = UInt(nBytes))
+
+  assert(!io.dma.resp.valid || io.dma.resp.bits.status === UInt(0),
+    "DMA frontend returned non-zero status")
 
   io.finished := (state === s_done)
 

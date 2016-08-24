@@ -135,12 +135,6 @@ class DmaFrontend(implicit p: Parameters) extends CoreModule()(p)
   val tlb_to_send = to_translate & ~tlb_sent
   val resp_status = Reg(UInt(width = dmaStatusBits))
 
-  def check_regions(src: UInt, dst: UInt): Bool = {
-    val src_cacheable = addrMap.isCacheable(src)
-    val dst_cacheable = addrMap.isCacheable(dst)
-    src_cacheable && dst_cacheable
-  }
-
   tlb.io.req.valid := tlb_to_send.orR
   tlb.io.req.bits.vpn := Mux(tlb_to_send(0), src_vpn, dst_vpn)
   tlb.io.req.bits.passthrough := Bool(false)
@@ -154,11 +148,16 @@ class DmaFrontend(implicit p: Parameters) extends CoreModule()(p)
 
   when (tlb.io.resp.fire()) {
     val recv_choice = PriorityEncoderOH(to_translate)
-    val error = Mux(recv_choice(0),
+    val xcpt = Mux(recv_choice(0),
       tlb.io.resp.bits.xcpt_ld, tlb.io.resp.bits.xcpt_st)
+    val cacheable = tlb.io.resp.bits.cacheable
 
-    when (error) {
+    when (xcpt) {
       resp_status := ClientDmaResponse.pagefault
+      state := s_finish
+    }
+    when (!cacheable) {
+      resp_status := ClientDmaResponse.invalid_region
       state := s_finish
     }
 
@@ -201,12 +200,7 @@ class DmaFrontend(implicit p: Parameters) extends CoreModule()(p)
   }
 
   when (state === s_translate && !to_translate.orR) {
-    when (check_regions(src_paddr, dst_paddr)) {
-      state := s_dma_req
-    } .otherwise {
-      resp_status := ClientDmaResponse.invalid_region
-      state := s_finish
-    }
+    state := s_dma_req
   }
 
   def setBusy(set: Bool, xact_id: UInt): UInt =
