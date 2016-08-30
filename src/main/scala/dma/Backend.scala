@@ -353,10 +353,14 @@ class PipelinedDmaTrackerPrefetcher(implicit p: Parameters)
 
 class PipelinedDmaTrackerReader(implicit p: Parameters)
     extends DmaModule()(p) with HasTileLinkParameters {
+
+  val pipelineDepth = p(DmaTrackerPipelineDepth)
+
   val io = new Bundle {
     val dma_req = Valid(new DmaRequest).flip
     val mem = new ClientUncachedTileLinkIO
     val pipe = Decoupled(new PipelinePacket)
+    val pipe_cnt = UInt(INPUT, log2Up(pipelineDepth+1))
     val busy = Bool(OUTPUT)
   }
 
@@ -409,7 +413,11 @@ class PipelinedDmaTrackerReader(implicit p: Parameters)
     (UInt(1) << bytes_left(tlByteAddrBits - 1, 0)) - UInt(1),
     Acquire.fullWriteMask)
 
-  io.mem.acquire.valid := state === s_mem_req && !get_busy.andR
+  // How many reads are outstanding?
+  val flow_ctrl_cnt = PopCount(get_busy) + io.pipe_cnt
+  val block_acquire = get_busy.andR || flow_ctrl_cnt >= UInt(pipelineDepth)
+
+  io.mem.acquire.valid := state === s_mem_req && !block_acquire
   io.mem.acquire.bits := Get(
     client_xact_id = get_id,
     addr_block = src_block,
@@ -512,7 +520,21 @@ class PipelinedDmaTracker(implicit p: Parameters) extends DmaTracker()(p) {
   val busy = prefetch.io.busy || reader.io.busy || writer.io.busy
   val xact_id = Reg(UInt(width = dmaXactIdBits))
 
-  writer.io.pipe <> Queue(reader.io.pipe, p(DmaTrackerPipelineDepth))
+  val pipelineDepth = p(DmaTrackerPipelineDepth)
+  require(pipelineDepth >= 1)
+  // we can't have more outstanding requests than we have pipeline space
+  require(nDmaTrackerMemXacts <= pipelineDepth)
+
+  if (p(DmaTrackerPipelineDepth) > 1) {
+    // one pipeline register is in the writer itself
+    val pipe = Module(new Queue(new PipelinePacket, pipelineDepth - 1))
+    pipe.io.enq <> reader.io.pipe
+    writer.io.pipe <> pipe.io.deq
+    reader.io.pipe_cnt := pipe.io.count +& !writer.io.pipe.ready
+  } else {
+    writer.io.pipe <> reader.io.pipe
+    reader.io.pipe_cnt := !writer.io.pipe.ready
+  }
 
   val s_idle :: s_resp :: Nil = Enum(Bits(), 2)
   val state = Reg(init = s_idle)
