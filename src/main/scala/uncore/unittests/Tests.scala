@@ -8,6 +8,24 @@ import uncore.tilelink._
 import uncore.converters._
 import cde.Parameters
 
+object TileLinkUnitTestUtils {
+  def fullDriverSet(sweepDepth: Int)(implicit p: Parameters) = {
+    val tlExternal = p(TLKey(p(TLId)))
+    val tlDataBeats = tlExternal.dataBeats
+    Module(new DriverSet(
+      (driverParams: Parameters) => {
+        implicit val p = driverParams
+        Seq(
+          Module(new PutSweepDriver(sweepDepth)),
+          Module(new PutMaskDriver),
+          Module(new PutAtomicDriver),
+          Module(new PutBlockSweepDriver(sweepDepth / tlDataBeats)),
+          Module(new PrefetchDriver),
+          Module(new GetMultiWidthDriver))
+      }))
+  }
+}
+
 class SmiConverterTest(implicit val p: Parameters) extends UnitTest
     with HasTileLinkParameters {
   val outermostParams = p.alterPartial({ case TLId => "Outermost" })
@@ -60,17 +78,7 @@ class TileLinkRAMTest(implicit val p: Parameters)
 
   val depth = 2 * tlDataBeats
   val ram = Module(new TileLinkTestRAM(depth))
-  val driver = Module(new DriverSet(
-    (driverParams: Parameters) => {
-      implicit val p = driverParams
-      Seq(
-        Module(new PutSweepDriver(depth)),
-        Module(new PutMaskDriver),
-        Module(new PutAtomicDriver),
-        Module(new PutBlockSweepDriver(depth / tlDataBeats)),
-        Module(new PrefetchDriver),
-        Module(new GetMultiWidthDriver))
-    }))
+  val driver = TileLinkUnitTestUtils.fullDriverSet(depth)
   ram.io <> driver.io.mem
   driver.io.start := io.start
   io.finished := driver.io.finished
@@ -84,17 +92,35 @@ class TileLinkSwitcherTest(implicit val p: Parameters)
     UIntToOH(addr(lsb, lsb))
   }
 
-  val driver = Module(new DriverSet(
-    (driverParams: Parameters) => {
-      implicit val p = driverParams
-      Seq(
-        Module(new PutSweepDriver(depth)),
-        Module(new PutMaskDriver),
-        Module(new PutAtomicDriver),
-        Module(new PutBlockSweepDriver(depth / tlDataBeats)),
-        Module(new PrefetchDriver),
-        Module(new GetMultiWidthDriver))
-    }))
+  val driver = TileLinkUnitTestUtils.fullDriverSet(depth)
+  driver.io.start := io.start
+  io.finished := driver.io.finished
+
+  val depth = 2 * tlDataBeats
+  val testrams = Seq.fill(2) { Module(new TileLinkTestRAM(depth)) }
+  val interconnect = Module(new TileLinkMemoryInterconnect(1, 2))
+  val switcher = Module(new ClientTileLinkIOSwitcher(2, 2))
+  val router = Module(new ClientUncachedTileLinkIORouter(2, addrToRoute _))
+  router.io.in <> driver.io.mem
+  switcher.io.in <> router.io.out.map(TileLinkIOWrapper(_))
+  interconnect.io.in <> switcher.io.out.map(TileLinkIOUnwrapper(_))
+  for ((ram, i) <- testrams.zipWithIndex) {
+    ram.io <> interconnect.io.out(i)
+  }
+  // swapsies
+  switcher.io.select(0) := UInt(1)
+  switcher.io.select(1) := UInt(0)
+}
+
+class UncachedTileLinkSwitcherTest(implicit val p: Parameters)
+    extends UnitTest with HasTileLinkParameters {
+
+  def addrToRoute(addr: UInt): UInt = {
+    val lsb = tlByteAddrBits + tlBeatAddrBits
+    UIntToOH(addr(lsb, lsb))
+  }
+
+  val driver = TileLinkUnitTestUtils.fullDriverSet(depth)
   driver.io.start := io.start
   io.finished := driver.io.finished
 
@@ -118,17 +144,7 @@ class TileLinkSerdesTest(implicit val p: Parameters)
     extends UnitTest with HasTileLinkParameters {
   val serdesWidth = 8
 
-  val driver = Module(new DriverSet(
-    (driverParams: Parameters) => {
-      implicit val p = driverParams
-      Seq(
-        Module(new PutSweepDriver(depth)),
-        Module(new PutMaskDriver),
-        Module(new PutAtomicDriver),
-        Module(new PutBlockSweepDriver(depth / tlDataBeats)),
-        Module(new PrefetchDriver),
-        Module(new GetMultiWidthDriver))
-    }))
+  val driver = TileLinkUnitTestUtils.fullDriverSet(depth)
   driver.io.start := io.start
   io.finished := driver.io.finished
 
@@ -143,6 +159,25 @@ class TileLinkSerdesTest(implicit val p: Parameters)
   testram.io <> TileLinkIOUnwrapper(desser.io.tl)
 }
 
+class UncachedTileLinkSerdesTest(implicit val p: Parameters)
+    extends UnitTest with HasTileLinkParameters {
+  val serdesWidth = 8
+
+  val driver = TileLinkUnitTestUtils.fullDriverSet(depth)
+  driver.io.start := io.start
+  io.finished := driver.io.finished
+
+  val depth = 2 * tlDataBeats
+  val testram = Module(new TileLinkTestRAM(depth))
+
+  val serdes = Module(new ClientUncachedTileLinkIOSerdes(serdesWidth))
+  val desser = Module(new ClientUncachedTileLinkIODesser(serdesWidth))
+  serdes.io.tl <> driver.io.mem
+  desser.io.serial.in <> serdes.io.serial.out
+  serdes.io.serial.in <> desser.io.serial.out
+  testram.io <> desser.io.tl
+}
+
 object UncoreUnitTests {
   def apply(implicit p: Parameters): Seq[UnitTest] =
     Seq(
@@ -150,5 +185,7 @@ object UncoreUnitTests {
       Module(new ROMSlaveTest),
       Module(new TileLinkRAMTest),
       Module(new TileLinkSwitcherTest),
-      Module(new TileLinkSerdesTest))
+      Module(new UncachedTileLinkSwitcherTest),
+      Module(new TileLinkSerdesTest),
+      Module(new UncachedTileLinkSerdesTest))
 }
